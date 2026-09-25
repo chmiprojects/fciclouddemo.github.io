@@ -327,37 +327,115 @@ function fmtTime(d) {
 }
 function num(v, dp = 1) { return isNum(v) ? Number(v).toFixed(dp) : '--'; }
 
-function decodeRaw(b64) {
-  if (!b64) return '(no raw bytes)';
-  try {
-    const bin = atob(b64);
-    let out = '';
-    for (let i = 0; i < bin.length; i++) {
-      const c = bin.charCodeAt(i);
-      out += (c === 10 || c === 13) ? '\n' : (c >= 32 && c < 127 ? bin[i] : '·');
-    }
-    return out.replace(/\n{2,}/g, '\n');
-  } catch { return '(undecodable)'; }
-}
-
 function rawBytes(r) {
   try { return r.raw_b64 ? atob(r.raw_b64) : ''; } catch { return ''; }
 }
 
-// one line: printable text, line breaks as a return arrow, anything else as <XX>
+// --- ESC/POS: keep the data, drop the printer commands ---------------------
+// A meter that drives a thermal printer mixes printer commands (ESC @ reset,
+// ESC ! bold, ESC a centre, GS V cut, bitmaps...) into the slip. Their
+// parameter bytes can look like text, so this walks the bytes the way a
+// printer does and drops each command together with its parameters.
+// Same rules as escposToText() in firmware/moisture_logger/parser.h.
+const ESC_ARGS = { '@': 0, '!': 1, 'a': 1, 'd': 1, 'e': 1, 'J': 1, 'K': 1, 'E': 1, 'G': 1, '-': 1, '2': 0, '3': 1,
+  ' ': 1, 't': 1, 'R': 1, '{': 1, 'V': 1, 'B': 1, '%': 1, '?': 1, 'M': 1, 'U': 1, 'v': 1, 'u': 1, '9': 1,
+  '=': 1, 'r': 1, 'T': 1, 'S': 0, 'L': 0, 'i': 0, 'm': 0, 'p': 3, '7': 3, '8': 2, '$': 2, '\\': 2, 'c': 2,
+  'W': 8, '\x0e': 1, '\x14': 1 };
+const GS_ARGS = { '!': 1, 'B': 1, 'H': 1, 'h': 1, 'w': 1, 'x': 1, 'f': 1, 'a': 1, 'r': 1, 'I': 1, 'T': 1, 'E': 1,
+  'b': 1, '/': 1, 'L': 2, 'W': 2, 'P': 2, '^': 3, ':': 0, '\x0c': 0 };
+const FS_ARGS = { '&': 0, '.': 0, '!': 1, '-': 1, 'W': 1, 'C': 1, 't': 1, 'S': 2, 'p': 2, 'd': 0, 's': 0 };
+const DC2_ARGS = { '#': 1, 'T': 0, 'E': 0, 'm': 3 };
+const CP437 = { 0xF8: '\u00b0', 0xF1: '\u00b1', 0xE6: '\u00b5', 0xFD: '\u00b2' };
+
+function escpos(bin) {
+  const n = bin.length, b = k => (k < n ? bin.charCodeAt(k) : 0);
+  let out = '', i = 0, cmds = 0, image = 0;
+  const skip = k => { if (k > 0) { image += Math.min(k, n - i); i = Math.min(n, i + k); } };
+  while (i < n) {
+    const c = b(i);
+    if ((c === 0x1B || c === 0x1D || c === 0x1C || c === 0x12) && i + 1 < n) {
+      const x = String.fromCharCode(b(i + 1));
+      i += 2; cmds++;
+      if (c === 0x1B) {                                   // ESC
+        if (x in ESC_ARGS) i += ESC_ARGS[x];
+        else if (x === 'D') { while (i < n && b(i) !== 0) i++; i++; }                 // tab stops, NUL-terminated
+        else if (x === '*') { const m = b(i), k = b(i + 1) + 256 * b(i + 2); i += 3; skip(k * (m >= 32 ? 3 : 1)); }
+        else if (x === '&') {                                                           // user-defined characters
+          const y = b(i), c1 = b(i + 1), c2 = b(i + 2); i += 3;
+          for (let ch = c1; ch <= c2 && i < n; ch++) { const w = b(i); i++; skip(y * w); }
+        }
+      } else if (c === 0x1D) {                            // GS
+        if (x in GS_ARGS) i += GS_ARGS[x];
+        else if (x === 'V') { const m = b(i); i += (m === 65 || m === 66) ? 2 : 1; }   // cut
+        else if (x === 'k') {                                                           // barcode
+          const m = b(i); i++;
+          if (m <= 6) { const s0 = i; while (i < n && b(i) !== 0) i++; i++; image += i - s0; }
+          else { const k = b(i); i++; skip(k); }
+        }
+        else if (x === 'v') { const k = (b(i + 2) + 256 * b(i + 3)) * (b(i + 4) + 256 * b(i + 5)); i += 6; skip(k); }  // raster image
+        else if (x === '*') { const k = b(i) * b(i + 1) * 8; i += 2; skip(k); }
+        else if (x === '(') { const k = b(i + 1) + 256 * b(i + 2); i += 3; skip(k); }
+      } else if (c === 0x1C) {                            // FS
+        if (x in FS_ARGS) i += FS_ARGS[x];
+        else if (x === 'q') {                                                           // NV images
+          const cnt = b(i); i++;
+          for (let k = 0; k < cnt && i < n; k++) { const sz = (b(i) + 256 * b(i + 1)) * (b(i + 2) + 256 * b(i + 3)) * 8; i += 4; skip(sz); }
+        }
+      } else {                                            // DC2
+        if (x in DC2_ARGS) i += DC2_ARGS[x];
+        else if (x === '*') { const k = b(i) * b(i + 1); i += 2; skip(k); }
+        else if (x === 'V' || x === 'v') { const k = (b(i) + 256 * b(i + 1)) * 48; i += 2; skip(k); }
+      }
+      continue;
+    }
+    if (c === 0x10 && (b(i + 1) === 4 || b(i + 1) === 5)) { i += 3; cmds++; continue; }   // DLE EOT/ENQ n
+    if (c === 0x10 && b(i + 1) === 0x14) { i += 5; cmds++; continue; }                      // DLE DC4 n m t
+    i++;
+    if (c === 10 || c === 12) out += '\n';
+    else if (c === 9) out += '\t';
+    else if (c >= 32 && c < 127) out += String.fromCharCode(c);
+    else if (c >= 128) out += CP437[c] || '\u00b7';
+    // other control bytes (CR, NUL, BEL...) carry no data
+  }
+  out = out.split('\n').map(l => l.replace(/\s+$/, '')).join('\n').replace(/\n{3,}/g, '\n\n').replace(/^\n+|\n+$/g, '');
+  return { text: out, cmds, image };
+}
+
+function cleanText(r) { return escpos(rawBytes(r)).text; }
+
+// one line for the table: the data with printer commands removed. Data that
+// isn't printer output at all (binary) shows byte by byte, <XX> for non-text.
 function previewHtml(r) {
   const bin = rawBytes(r);
   if (!bin) return '<span class="c">(no bytes)</span>';
-  let out = '', n = 0;
-  for (let i = 0; i < bin.length && n < 160; i++) {
-    const c = bin.charCodeAt(i);
-    if (c === 13) continue;
-    if (c === 10) { out += '<span class="c">\u23ce </span>'; n += 2; }
-    else if (c >= 32 && c < 127) { out += esc(bin[i]); n++; }
-    else { out += '<span class="c">&lt;' + c.toString(16).toUpperCase().padStart(2, '0') + '&gt;</span>'; n += 4; }
+  const e = escpos(bin);
+  let out = '';
+  if (/[!-~]/.test(e.text)) {           // real text in it (not just stray bytes)
+    out = e.text.split('\n').filter(l => l.trim()).map(l => esc(l.trim().replace(/\s{2,}/g, ' ')))
+      .join('<span class="c"> \u23ce </span>');
+    if (e.image) out = '<span class="c">[image] </span>' + out;
+  } else if (e.cmds) {
+    out = '<span class="c">' + (e.image ? '(printed as an image - no text)' : '(printer commands only, no text)') + '</span>';
+  } else {
+    let n = 0;
+    for (let i = 0; i < bin.length && n < 160; i++) {
+      const c = bin.charCodeAt(i);
+      if (c === 13) continue;
+      if (c === 10) { out += '<span class="c">\u23ce </span>'; n += 2; }
+      else if (c >= 32 && c < 127) { out += esc(bin[i]); n++; }
+      else { out += '<span class="c">&lt;' + c.toString(16).toUpperCase().padStart(2, '0') + '&gt;</span>'; n += 4; }
+    }
   }
   if (r.continues) out = '<span class="c">[part, continues in the next record] </span>' + out;
   return out;
+}
+
+function detailHtml(r) {
+  const e = escpos(rawBytes(r));
+  const note = e.cmds ? ' (' + e.cmds + ' printer command' + (e.cmds === 1 ? '' : 's') + ' removed' +
+                        (e.image ? ', ' + e.image + ' bytes of image/barcode skipped' : '') + ')' : '';
+  return '<div class="lbl">Data' + note + '</div><pre>' + esc(e.text || '(no text)') + '</pre>' +
+         '<div class="lbl">Exactly as received (hex)</div><pre>' + esc(hexDump(r)) + '</pre>';
 }
 
 function hexDump(r) {
@@ -555,7 +633,7 @@ function drawChart(rows) {
 
   if (pts.length < 2) {
     host.innerHTML = '<div class="empty">Not enough timestamped readings to plot yet.' +
-      (skipped ? '<br>' + skipped + ' reading(s) have no device clock — see the table below.' : '') + '</div>';
+      (skipped ? '<br>' + skipped + ' record(s) have no moisture value or no time — they are in the table below.' : '') + '</div>';
     return;
   }
 
@@ -607,7 +685,7 @@ function drawChart(rows) {
   host.innerHTML = '<svg viewBox="0 0 ' + W + ' ' + H + '" width="' + W + '" height="' + H +
                    '" role="img" aria-label="Moisture percentage by reading time">' + g + '</svg>' +
                    (skipped ? '<div class="cap" style="margin:8px 0 0">' + skipped +
-                              ' reading(s) omitted: no device timestamp. They are in the table.</div>' : '');
+                              ' record(s) without a moisture value or time are only in the table.</div>' : '');
 
   const bySeq = new Map(pts.map(r => [r.seq, r]));
   const tip = $('tip');
@@ -657,7 +735,7 @@ const cols = () => ALL_COLS.filter(c => !c.has || HAS[c.has]);
 function tableRows(rows) {
   const q = query.trim().toLowerCase();
   const out = q ? rows.filter(r =>
-    [r.seq, rawBytes(r), r.commodity, r.code, num(r.moisture_pct), num(r.temperature_c), r.meter_date, r.meter_time, fmtTime(tsOf(r))]
+    [r.seq, cleanText(r), rawBytes(r), r.commodity, r.code, num(r.moisture_pct), num(r.temperature_c), r.meter_date, r.meter_time, fmtTime(tsOf(r))]
       .join(' ').toLowerCase().includes(q)) : rows.slice();
   const col = cols().find(c => c.key === sortBy.key) || ALL_COLS[0];
   out.sort((a, b) => {
@@ -681,13 +759,12 @@ function drawTable(rows) {
     body += '<tr class="rec' + (fresh.has(r.seq) ? ' new' : '') + '" data-seq="' + esc(r.seq) + '">' +
       cs.map(c => c.td(r)).join('') + '</tr>' +
       '<tr class="raw" id="raw-' + esc(r.seq) + '"' + (openRaw.has(r.seq) ? '' : ' hidden') +
-      '><td colspan="' + cs.length + '"><div class="lbl">Text</div><pre>' + esc(decodeRaw(r.raw_b64)) + '</pre>' +
-      '<div class="lbl">Hex</div><pre>' + esc(hexDump(r)) + '</pre></td></tr>';
+      '><td colspan="' + cs.length + '">' + detailHtml(r) + '</td></tr>';
   }
   if (!list.length) body = '<tr><td colspan="' + cs.length + '" class="empty" style="padding:24px">No records match.</td></tr>';
   $('tbody').innerHTML = body;
   $('tcap').textContent = (list.length === rows.length ? list.length + ' records' : list.length + ' of ' + rows.length + ' records') +
-    '. Click a row to see everything received, as text and hex; click a column heading to sort.';
+    '. Printer commands are removed from the data; click a row for the data and the exact bytes received (hex). Click a column heading to sort.';
 }
 
 function focusRow(seq) {
@@ -822,7 +899,7 @@ $('csv').onclick = () => {
                 'moisture_pct', 'temperature_c', 'humidity_pct', 'crc32', 'raw_b64'];
   const q = v => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
   const csv = [keys.join(',')].concat(visible().map(r =>
-    keys.map(k => q(k === 'text' ? decodeRaw(r.raw_b64) : r[k])).join(','))).join('\n');
+    keys.map(k => q(k === 'text' ? cleanText(r) : r[k])).join(','))).join('\n');
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
   a.download = (DB.device || 'meter-data') + '.csv';
