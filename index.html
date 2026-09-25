@@ -261,7 +261,19 @@ async function load() {
   }
   lastCheck = Date.now();
 
-  const rows = (Array.isArray(db.records) ? db.records : []).slice().sort((a, b) => (a.seq || 0) - (b.seq || 0));
+  let rows;
+  if (Array.isArray(db.months)) {                     // the public site: records live in the archive
+    ARCHIVE = true;
+    const msig = [db.archived_up_to_seq, db.months.join(','), historyAll].join('|');
+    if (msig !== archiveSig) {
+      try { rows = await loadArchive(db); archiveSig = msig; }
+      catch (e) { rows = ROWS.slice(); setStatus('error', e.message); }
+    } else rows = ROWS.slice();
+  } else {                                            // the logger's own page, or an older database.json
+    ARCHIVE = false;
+    rows = (Array.isArray(db.records) ? db.records : []).slice();
+  }
+  rows.sort((a, b) => (a.seq || 0) - (b.seq || 0));
   const s = [db.total_readings, rows.length, rows.length ? rows[rows.length - 1].seq : ''].join('|');
   DB = db;
   paintMeta();
@@ -279,6 +291,44 @@ async function load() {
   }
   setStatus('ok');
   schedule();
+}
+
+// --- the permanent archive ----------------------------------------------------
+// database.json lists the months; each month's index.json lists its files;
+// each file holds a batch of records and never changes. The recent view loads
+// the newest ~RECENT records; "Load full history" loads everything.
+const RECENT = 500;
+let ARCHIVE = false, historyAll = false, archiveSig = null;
+const ARCH = new Map(), LOADED = new Set();
+let newestLoadedSeq = 0;
+
+async function getJson(url, bust) {
+  const r = await fetch(url + (bust ? '?t=' + Date.now() : ''), { cache: bust ? 'no-store' : 'default' });
+  if (!r.ok) throw new Error('HTTP ' + r.status + ' ' + url);
+  return r.json();
+}
+
+async function loadArchive(db) {
+  const base = './' + (db.archive || '');
+  const months = [...db.months].sort().reverse();                 // newest month first
+  for (const m of months) {
+    let idx;
+    try { idx = await getJson(base + m + '/index.json', true); } catch { continue; }
+    const files = (idx.files || []).slice().sort().reverse();     // newest file first
+    for (const f of files) {
+      const path = base + m + '/' + f;
+      if (LOADED.has(path)) continue;
+      const first = +((f.match(/_(\d+)-(\d+)\.json$/) || [])[1] || 0);
+      const isNew = first > newestLoadedSeq;                      // new since the last check: always load
+      if (!historyAll && !isNew && ARCH.size >= RECENT) continue;
+      const b = await getJson(path, false);                       // archive files never change: cacheable
+      for (const r of b.records || []) ARCH.set(r.seq, r);
+      LOADED.add(path);
+    }
+    if (!historyAll && ARCH.size >= RECENT) break;
+  }
+  for (const k of ARCH.keys()) if (k > newestLoadedSeq) newestLoadedSeq = k;
+  return [...ARCH.values()];
 }
 
 function schedule() {
@@ -534,6 +584,7 @@ function buildSkeleton() {
         '<input type="search" id="q" placeholder="Search the received text" aria-label="Search records"></div>' +
       '<div class="filters">' +
         '<span id="fcwrap" hidden><label for="fc">Commodity</label> <select id="fc"></select></span>' +
+        '<button id="histbtn" hidden title="Load every record from the permanent archive">Load full history</button>' +
         '<label for="fr">Period</label><select id="fr">' +
         [['all', 'All time'], ['24h', 'Last 24 hours'], ['7d', 'Last 7 days'], ['30d', 'Last 30 days']]
           .map(([v, l]) => '<option value="' + v + '">' + l + '</option>').join('') +
@@ -549,6 +600,12 @@ function buildSkeleton() {
   $('fc').onchange = e => { filters.commodity = e.target.value; update(); };
   $('fr').onchange = e => { filters.range = e.target.value; update(); };
   $('q').oninput = e => { query = e.target.value; drawTable(visible()); };
+  $('histbtn').onclick = () => {
+    historyAll = true;
+    $('histbtn').disabled = true;
+    $('histbtn').textContent = 'Loading history\u2026';
+    load();
+  };
   $('thead').onclick = e => {
     const th = e.target.closest('th');
     if (!th) return;
@@ -569,6 +626,7 @@ function update() {
   detectFields();
   if (!cols().some(c => c.key === sortBy.key)) sortBy = { key: 'seq', dir: -1 };
   $('fcwrap').hidden = !HAS.commodity;
+  $('histbtn').hidden = !ARCHIVE || historyAll || !(DB.total_readings > ROWS.length);
   if (!HAS.commodity) filters.commodity = 'all';
   syncCommodityOptions();
   const rows = visible();
@@ -601,7 +659,8 @@ function tilesHtml(rows) {
     (n ? '<div class="n">' + n + '</div>' : '') + '</div>';
   let html =
     t('Records', rows.length, '', ROWS.length !== rows.length ? 'of ' + ROWS.length + ' stored'
-      : (DB.dropped_from_window ? DB.dropped_from_window + ' older records aged out' : 'all stored')) +
+      : (ARCHIVE && !historyAll && DB.total_readings > ROWS.length ? 'newest shown - the rest are in the archive'
+         : DEVICE ? 'waiting in the logger' : 'all received')) +
     t('Last received', last ? esc(fmtTime(tsOf(last))) : '--', '', last ? 'record ' + esc(last.seq) : '', lastNew ? 'new' : '') +
     t('Bytes received', bytes.toLocaleString(), '', rows.length ? 'about ' + Math.round(bytes / rows.length) + ' per record' : '');
   if (HAS.moisture) {
@@ -764,6 +823,7 @@ function drawTable(rows) {
   if (!list.length) body = '<tr><td colspan="' + cs.length + '" class="empty" style="padding:24px">No records match.</td></tr>';
   $('tbody').innerHTML = body;
   $('tcap').textContent = (list.length === rows.length ? list.length + ' records' : list.length + ' of ' + rows.length + ' records') +
+    (DEVICE ? ' waiting in the logger (pushed records are deleted from it - see the public site)' : '') +
     '. Printer commands are removed from the data; click a row for the data and the exact bytes received (hex). Click a column heading to sort.';
 }
 
