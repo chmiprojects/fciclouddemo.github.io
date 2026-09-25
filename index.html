@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Moisture Readings</title>
+<title>FCI Demo Data Logging</title>
 <style>
   :root {
     color-scheme: light;
@@ -54,6 +54,7 @@
   }
 
   * { box-sizing: border-box; }
+  [hidden] { display: none !important; }   /* beats display:flex etc. on classes */
   body {
     margin: 0;
     background: var(--page);
@@ -135,10 +136,27 @@
   tr.raw td { background: var(--page); padding: 0; border-bottom: 1px solid var(--border); }
   tr.raw pre { margin: 0; padding: 10px 12px; font: 12px/1.45 ui-monospace, "Cascadia Code", Consolas, monospace; white-space: pre-wrap; word-break: break-word; color: var(--text-2); }
   .chip { display: inline-flex; align-items: center; gap: 6px; }
+  td.data { font: 12px/1.45 ui-monospace, "Cascadia Code", Consolas, monospace; color: var(--text-1);
+            max-width: 460px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  td.data .c { color: var(--muted); }
+  tr.raw .lbl { font-size: 11px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted);
+                padding: 10px 12px 0; }
 
   .empty { text-align: center; padding: 48px 16px; color: var(--text-2); }
   .empty .small { font-size: 12px; color: var(--muted); }
   .foot { font-size: 12px; color: var(--muted); margin-top: 26px; }
+
+  .devbar { display: flex; gap: 12px; align-items: center; justify-content: space-between;
+            flex-wrap: wrap; margin: 16px 0 0; }
+  .devbar .k { font-size: 11px; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); }
+  .devbar .line { font-size: 13px; color: var(--text-2); }
+  .devbar .line b { color: var(--text-1); font-weight: 600; }
+  .devbar a { color: var(--s1); }
+  .devbar .warn { color: var(--bad); }
+  button.primary { background: var(--s1); color: #fff; border-color: transparent; padding: 8px 14px; font-weight: 600; }
+  button.primary:hover { filter: brightness(1.08); background: var(--s1); }
+  button.primary:disabled { background: var(--surface-1); color: var(--muted); border-color: var(--border);
+                            cursor: default; filter: none; font-weight: 400; }
 
   #toast {
     position: fixed; left: 50%; bottom: 22px; transform: translate(-50%, 16px); opacity: 0;
@@ -157,7 +175,7 @@
 <div class="wrap">
 
   <header>
-    <h1>Moisture readings</h1>
+    <h1>FCI DEMO DATA LOGGING</h1>
     <span class="spacer"></span>
     <span class="group">
       <button id="live" class="live checking" title="Click to pause or resume automatic updates"><i></i><span>Connecting&hellip;</span></button>
@@ -168,6 +186,19 @@
     <button id="csv">Download CSV</button>
   </header>
   <div class="sub" id="meta"></div>
+
+  <!-- shown only when this page is served by the logger itself -->
+  <div class="card devbar" id="dev" hidden>
+    <div>
+      <div class="k">This logger</div>
+      <div class="line" id="devline1"></div>
+      <div class="line" id="devline2"></div>
+    </div>
+    <div class="group">
+      <button id="redetect" title="Forget the baud rate and format, and learn them again from the next slip">Re-detect line</button>
+      <button class="primary" id="pushbtn" disabled>Push to GitHub now</button>
+    </div>
+  </div>
 
   <div id="app"><div class="empty">Connecting&hellip;</div></div>
 
@@ -231,15 +262,17 @@ async function load() {
   lastCheck = Date.now();
 
   const rows = (Array.isArray(db.records) ? db.records : []).slice().sort((a, b) => (a.seq || 0) - (b.seq || 0));
-  const s = [db.generated, db.total_readings, rows.length, rows.length ? rows[rows.length - 1].seq : ''].join('|');
+  const s = [db.total_readings, rows.length, rows.length ? rows[rows.length - 1].seq : ''].join('|');
+  DB = db;
+  paintMeta();
   if (s !== sig) {                            // only touch the page when the data changed
     fresh = new Set();
     if (seen) {
       for (const r of rows) if (!seen.has(r.seq)) fresh.add(r.seq);
-      if (fresh.size) toast(fresh.size === 1 ? '1 new reading' : fresh.size + ' new readings');
+      if (fresh.size) toast(fresh.size === 1 ? '1 new record' : fresh.size + ' new records');
     }
     seen = new Set(rows.map(r => r.seq));
-    sig = s; DB = db; ROWS = rows;
+    sig = s; ROWS = rows;
     assignColors();
     render();
     if (fresh.size) setTimeout(() => fresh.clear(), 5000);
@@ -307,6 +340,56 @@ function decodeRaw(b64) {
   } catch { return '(undecodable)'; }
 }
 
+function rawBytes(r) {
+  try { return r.raw_b64 ? atob(r.raw_b64) : ''; } catch { return ''; }
+}
+
+// one line: printable text, line breaks as a return arrow, anything else as <XX>
+function previewHtml(r) {
+  const bin = rawBytes(r);
+  if (!bin) return '<span class="c">(no bytes)</span>';
+  let out = '', n = 0;
+  for (let i = 0; i < bin.length && n < 160; i++) {
+    const c = bin.charCodeAt(i);
+    if (c === 13) continue;
+    if (c === 10) { out += '<span class="c">\u23ce </span>'; n += 2; }
+    else if (c >= 32 && c < 127) { out += esc(bin[i]); n++; }
+    else { out += '<span class="c">&lt;' + c.toString(16).toUpperCase().padStart(2, '0') + '&gt;</span>'; n += 4; }
+  }
+  if (r.continues) out = '<span class="c">[part, continues in the next record] </span>' + out;
+  return out;
+}
+
+function hexDump(r) {
+  const bin = rawBytes(r);
+  let out = '';
+  for (let i = 0; i < bin.length; i += 16) {
+    let hex = '', asc = '';
+    for (let j = 0; j < 16; j++) {
+      if (i + j < bin.length) {
+        const c = bin.charCodeAt(i + j);
+        hex += c.toString(16).toUpperCase().padStart(2, '0') + ' ';
+        asc += c >= 32 && c < 127 ? bin[i + j] : '.';
+      } else hex += '   ';
+    }
+    out += i.toString(16).toUpperCase().padStart(4, '0') + '  ' + hex + ' ' + asc + '\n';
+  }
+  return out || '(no bytes)';
+}
+
+// What the data actually contains decides which parsed fields are shown.
+let HAS = { moisture: false, temp: false, commodity: false, meter: false, code: false };
+function detectFields() {
+  const any = f => ROWS.some(f);
+  HAS = {
+    moisture: any(r => isNum(r.moisture_pct)),
+    temp: any(r => isNum(r.temperature_c)),
+    commodity: any(r => r.commodity && String(r.commodity).trim()),
+    code: any(r => r.code),
+    meter: any(r => r.meter_date || r.meter_time),
+  };
+}
+
 function visible() {
   const now = Date.now();
   const spans = { '24h': 864e5, '7d': 6048e5, '30d': 2592e6 };
@@ -337,17 +420,21 @@ function showWaiting(msg) {
     '.<br>(' + esc(msg) + ')</p></div>';
 }
 
-function render() {
+function paintMeta() {
   $('meta').textContent =
     (DB.device ? DB.device + ' · ' : '') +
-    (DB.total_readings != null ? DB.total_readings + ' readings taken · ' : '') +
-    'updated ' + (DB.generated ? fmtTime(new Date(DB.generated)) : 'unknown');
+    (DB.total_readings != null ? DB.total_readings + ' records received · ' : '') +
+    (DEVICE ? 'live from the logger' : 'updated ' + (DB.generated ? fmtTime(new Date(DB.generated)) : 'unknown'));
+}
 
+function render() {
+  paintMeta();
   if (!ROWS.length) {
     built = false;
-    $('app').innerHTML = '<div class="empty"><p>No readings yet.</p>' +
-      '<p class="small">The device pushes after 20 records or 5 minutes, whichever comes first.<br>' +
-      'New readings appear here by themselves.</p></div>';
+    $('app').innerHTML = '<div class="empty"><p>No data received yet.</p>' +
+      '<p class="small">' + (DEVICE ? 'Anything the logger receives appears here within seconds.'
+        : 'The logger pushes once an hour, or when its local page\u2019s push button is pressed.') +
+      '<br>New data appears here by itself.</p></div>';
     return;
   }
   if (!built) buildSkeleton();
@@ -359,21 +446,21 @@ function render() {
 function buildSkeleton() {
   $('app').innerHTML =
     '<div class="tiles" id="tiles"></div>' +
+    '<div class="card" id="chartcard" hidden>' +
+      '<h2>Moisture by reading time</h2>' +
+      '<div class="cap">One dot per record that contained a moisture value. Hover for details, click a dot to open the record.</div>' +
+      '<div id="legend"></div><div id="chart"></div>' +
+    '</div>' +
     '<div class="card">' +
+      '<div class="cardhead"><h2>Received data</h2>' +
+        '<input type="search" id="q" placeholder="Search the received text" aria-label="Search records"></div>' +
       '<div class="filters">' +
-        '<label for="fc">Commodity</label><select id="fc"></select>' +
+        '<span id="fcwrap" hidden><label for="fc">Commodity</label> <select id="fc"></select></span>' +
         '<label for="fr">Period</label><select id="fr">' +
         [['all', 'All time'], ['24h', 'Last 24 hours'], ['7d', 'Last 7 days'], ['30d', 'Last 30 days']]
           .map(([v, l]) => '<option value="' + v + '">' + l + '</option>').join('') +
         '</select>' +
       '</div>' +
-      '<h2>Moisture by reading time</h2>' +
-      '<div class="cap">One dot per printed slip. Hover for details, click a dot to open its slip in the table.</div>' +
-      '<div id="legend"></div><div id="chart"></div>' +
-    '</div>' +
-    '<div class="card">' +
-      '<div class="cardhead"><h2>All records</h2>' +
-        '<input type="search" id="q" placeholder="Search commodity, code, value, date" aria-label="Search records"></div>' +
       '<div class="cap" id="tcap"></div>' +
       '<div style="overflow-x:auto"><table><thead id="thead"></thead><tbody id="tbody"></tbody></table></div>' +
     '</div>';
@@ -388,7 +475,7 @@ function buildSkeleton() {
     const th = e.target.closest('th');
     if (!th) return;
     const k = th.dataset.k;
-    sortBy = sortBy.key === k ? { key: k, dir: -sortBy.dir } : { key: k, dir: COLS.find(c => c.key === k).num ? -1 : 1 };
+    sortBy = sortBy.key === k ? { key: k, dir: -sortBy.dir } : { key: k, dir: cols().find(c => c.key === k).num ? -1 : 1 };
     drawTable(visible());
   };
   $('tbody').onclick = e => {
@@ -401,11 +488,19 @@ function buildSkeleton() {
 }
 
 function update() {
+  detectFields();
+  if (!cols().some(c => c.key === sortBy.key)) sortBy = { key: 'seq', dir: -1 };
+  $('fcwrap').hidden = !HAS.commodity;
+  if (!HAS.commodity) filters.commodity = 'all';
   syncCommodityOptions();
   const rows = visible();
   $('tiles').innerHTML = tilesHtml(rows);
-  $('legend').innerHTML = legendHtml(rows);
-  drawChart(rows);
+  const plottable = rows.filter(r => tsOf(r) && isNum(r.moisture_pct)).length;
+  $('chartcard').hidden = plottable < 2;
+  if (plottable >= 2) {
+    $('legend').innerHTML = HAS.commodity ? legendHtml(rows) : '';
+    drawChart(rows);
+  }
   drawTable(rows);
 }
 
@@ -419,21 +514,28 @@ function syncCommodityOptions() {
 }
 
 function tilesHtml(rows) {
-  const m = rows.map(r => r.moisture_pct).filter(isNum).map(Number);
   const last = rows[rows.length - 1];
-  const mean = m.length ? m.reduce((a, b) => a + b, 0) / m.length : null;
   const lastNew = last && fresh.has(last.seq);
+  const bytes = rows.reduce((a, r) => a + (isNum(r.bytes) ? +r.bytes : 0), 0);
   const t = (k, v, u, n, cls) =>
     '<div class="tile' + (cls ? ' ' + cls : '') + '"><div class="k">' + k + '</div><div class="v">' + v +
     (u ? '<span class="u">' + u + '</span>' : '') + '</div>' +
     (n ? '<div class="n">' + n + '</div>' : '') + '</div>';
-  return t('Readings shown', rows.length, '', ROWS.length !== rows.length ? 'of ' + ROWS.length + ' in window' : 'whole window') +
-    t('Latest moisture', last ? num(last.moisture_pct) : '--', '%',
-      last ? esc(commodityOf(last)) + ' · ' + fmtTime(tsOf(last)) : '', lastNew ? 'new' : '') +
-    t('Mean moisture', mean == null ? '--' : num(mean, 2), '%', m.length + ' with a value') +
-    t('Range', m.length ? num(Math.min(...m)) + '–' + num(Math.max(...m)) : '--', m.length ? '%' : '', 'lowest to highest') +
-    t('Commodities', new Set(rows.map(commodityOf)).size, '',
-      DB.dropped_from_window ? DB.dropped_from_window + ' older records aged out' : 'in this view');
+  let html =
+    t('Records', rows.length, '', ROWS.length !== rows.length ? 'of ' + ROWS.length + ' stored'
+      : (DB.dropped_from_window ? DB.dropped_from_window + ' older records aged out' : 'all stored')) +
+    t('Last received', last ? esc(fmtTime(tsOf(last))) : '--', '', last ? 'record ' + esc(last.seq) : '', lastNew ? 'new' : '') +
+    t('Bytes received', bytes.toLocaleString(), '', rows.length ? 'about ' + Math.round(bytes / rows.length) + ' per record' : '');
+  if (HAS.moisture) {
+    const m = rows.map(r => r.moisture_pct).filter(isNum).map(Number);
+    const lastM = [...rows].reverse().find(r => isNum(r.moisture_pct));
+    const mean = m.length ? m.reduce((a, b) => a + b, 0) / m.length : null;
+    html += t('Latest moisture', lastM ? num(lastM.moisture_pct) : '--', '%',
+              lastM && HAS.commodity ? esc(commodityOf(lastM)) : '') +
+      t('Mean moisture', mean == null ? '--' : num(mean, 2), '%', m.length + ' with a value') +
+      t('Range', m.length ? num(Math.min(...m)) + '\u2013' + num(Math.max(...m)) : '--', m.length ? '%' : '', 'lowest to highest');
+  }
+  return html;
 }
 
 function legendHtml(rows) {
@@ -530,23 +632,34 @@ function drawChart(rows) {
 }
 
 // --- table -----------------------------------------------------------------
-const COLS = [
-  { key: 'seq',       label: 'Seq',         num: true, val: r => isNum(r.seq) ? +r.seq : null },
-  { key: 'time',      label: 'Device time',            val: r => { const d = tsOf(r); return d ? d.getTime() : null; } },
-  { key: 'commodity', label: 'Commodity',              val: r => commodityOf(r).toLowerCase() },
-  { key: 'code',      label: 'Code',                   val: r => r.code ? String(r.code) : null },
-  { key: 'moisture',  label: 'Moisture %',  num: true, val: r => isNum(r.moisture_pct) ? +r.moisture_pct : null },
-  { key: 'temp',      label: 'Temp °C', num: true, val: r => isNum(r.temperature_c) ? +r.temperature_c : null },
-  { key: 'bytes',     label: 'Bytes',       num: true, val: r => isNum(r.bytes) ? +r.bytes : null },
-  { key: 'meter',     label: 'Meter clock',            val: r => [r.meter_date, r.meter_time].filter(Boolean).join(' ') || null },
+const ALL_COLS = [
+  { key: 'seq',       label: 'Seq',         num: true, val: r => isNum(r.seq) ? +r.seq : null,
+    td: r => '<td class="num">' + esc(r.seq) + '</td>' },
+  { key: 'time',      label: 'Received',               val: r => { const d = tsOf(r); return d ? d.getTime() : null; },
+    td: r => '<td style="white-space:nowrap">' + fmtTime(tsOf(r)) + '</td>' },
+  { key: 'data',      label: 'Data',                   val: r => rawBytes(r),
+    td: r => '<td class="data">' + previewHtml(r) + '</td>' },
+  { key: 'bytes',     label: 'Bytes',       num: true, val: r => isNum(r.bytes) ? +r.bytes : null,
+    td: r => '<td class="num">' + esc(r.bytes || '') + '</td>' },
+  { key: 'commodity', label: 'Commodity',  has: 'commodity', val: r => commodityOf(r).toLowerCase(),
+    td: r => '<td><span class="chip"><i class="swatch" style="background:' + colorOf(r) + '"></i>' + esc(commodityOf(r)) + '</span></td>' },
+  { key: 'code',      label: 'Code',       has: 'code', val: r => r.code ? String(r.code) : null,
+    td: r => '<td>' + esc(r.code || '') + '</td>' },
+  { key: 'moisture',  label: 'Moisture %', has: 'moisture', num: true, val: r => isNum(r.moisture_pct) ? +r.moisture_pct : null,
+    td: r => '<td class="num">' + num(r.moisture_pct) + '</td>' },
+  { key: 'temp',      label: 'Temp \u00b0C', has: 'temp', num: true, val: r => isNum(r.temperature_c) ? +r.temperature_c : null,
+    td: r => '<td class="num">' + num(r.temperature_c) + '</td>' },
+  { key: 'meter',     label: 'Meter clock', has: 'meter', val: r => [r.meter_date, r.meter_time].filter(Boolean).join(' ') || null,
+    td: r => '<td>' + esc([r.meter_date, r.meter_time].filter(Boolean).join(' ') || '\u2014') + '</td>' },
 ];
+const cols = () => ALL_COLS.filter(c => !c.has || HAS[c.has]);
 
 function tableRows(rows) {
   const q = query.trim().toLowerCase();
   const out = q ? rows.filter(r =>
-    [r.seq, commodityOf(r), r.code, num(r.moisture_pct), num(r.temperature_c), r.meter_date, r.meter_time, fmtTime(tsOf(r))]
+    [r.seq, rawBytes(r), r.commodity, r.code, num(r.moisture_pct), num(r.temperature_c), r.meter_date, r.meter_time, fmtTime(tsOf(r))]
       .join(' ').toLowerCase().includes(q)) : rows.slice();
-  const col = COLS.find(c => c.key === sortBy.key);
+  const col = cols().find(c => c.key === sortBy.key) || ALL_COLS[0];
   out.sort((a, b) => {
     const x = col.val(a), y = col.val(b);
     if (x == null || y == null) return (x == null) - (y == null) || (b.seq - a.seq);   // blanks last
@@ -557,7 +670,8 @@ function tableRows(rows) {
 
 function drawTable(rows) {
   const list = tableRows(rows);
-  $('thead').innerHTML = '<tr>' + COLS.map(c =>
+  const cs = cols();
+  $('thead').innerHTML = '<tr>' + cs.map(c =>
     '<th data-k="' + c.key + '"' + (c.num ? ' class="r"' : '') +
     ' aria-sort="' + (sortBy.key === c.key ? (sortBy.dir > 0 ? 'ascending' : 'descending') : 'none') + '">' +
     c.label + '<span class="arr">' + (sortBy.key === c.key ? (sortBy.dir > 0 ? '▴' : '▾') : '') + '</span></th>').join('') + '</tr>';
@@ -565,22 +679,15 @@ function drawTable(rows) {
   let body = '';
   for (const r of list) {
     body += '<tr class="rec' + (fresh.has(r.seq) ? ' new' : '') + '" data-seq="' + esc(r.seq) + '">' +
-      '<td class="num">' + esc(r.seq) + '</td>' +
-      '<td>' + fmtTime(tsOf(r)) + '</td>' +
-      '<td><span class="chip"><i class="swatch" style="background:' + colorOf(r) + '"></i>' + esc(commodityOf(r)) + '</span></td>' +
-      '<td>' + esc(r.code || '') + '</td>' +
-      '<td class="num">' + num(r.moisture_pct) + '</td>' +
-      '<td class="num">' + num(r.temperature_c) + '</td>' +
-      '<td class="num">' + esc(r.bytes || '') + '</td>' +
-      '<td>' + esc([r.meter_date, r.meter_time].filter(Boolean).join(' ') || '—') + '</td>' +
-      '</tr>' +
+      cs.map(c => c.td(r)).join('') + '</tr>' +
       '<tr class="raw" id="raw-' + esc(r.seq) + '"' + (openRaw.has(r.seq) ? '' : ' hidden') +
-      '><td colspan="8"><pre>' + esc(decodeRaw(r.raw_b64)) + '</pre></td></tr>';
+      '><td colspan="' + cs.length + '"><div class="lbl">Text</div><pre>' + esc(decodeRaw(r.raw_b64)) + '</pre>' +
+      '<div class="lbl">Hex</div><pre>' + esc(hexDump(r)) + '</pre></td></tr>';
   }
-  if (!list.length) body = '<tr><td colspan="8" class="empty" style="padding:24px">No records match.</td></tr>';
+  if (!list.length) body = '<tr><td colspan="' + cs.length + '" class="empty" style="padding:24px">No records match.</td></tr>';
   $('tbody').innerHTML = body;
   $('tcap').textContent = (list.length === rows.length ? list.length + ' records' : list.length + ' of ' + rows.length + ' records') +
-    '. Click a row to see the raw slip; click a column heading to sort.';
+    '. Click a row to see everything received, as text and hex; click a column heading to sort.';
 }
 
 function focusRow(seq) {
@@ -593,6 +700,97 @@ function focusRow(seq) {
   tr.scrollIntoView({ block: 'center', behavior: 'smooth' });
 }
 
+// --- device panel (only when served by the logger) -------------------------
+let DEVICE = null, pushing = false;
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+function dur(s) {
+  if (s < 60) return s + ' s';
+  if (s < 3600) return Math.round(s / 60) + ' min';
+  const h = Math.floor(s / 3600), m = Math.round((s % 3600) / 60);
+  return h + ' h' + (m ? ' ' + m + ' min' : '');
+}
+
+async function devStatus() {
+  let s;
+  try {
+    const r = await fetch('./api/status?t=' + Date.now(), { cache: 'no-store' });
+    if (!r.ok) return null;
+    s = await r.json();
+    if (!s || !s.device) return null;
+  } catch { if (DEVICE) paintDevice(null); return null; }
+  const first = !DEVICE;
+  DEVICE = s;
+  paintDevice(s);
+  if (first && DB) paintMeta();
+  return s;
+}
+
+function paintDevice(s) {
+  $('dev').hidden = false;
+  const btn = $('pushbtn');
+  if (!s) {
+    $('devline1').innerHTML = '<span class="warn">The logger is not answering.</span>';
+    $('devline2').textContent = 'Check that it is powered and on this network.';
+    btn.disabled = true;
+    return;
+  }
+  const wifi = s.wifi ? esc(s.ip) + ' \u00b7 WiFi ' + esc(s.ssid) + ' (' + s.rssi + ' dBm)'
+                      : '<span class="warn">WiFi disconnected</span>';
+  const ln = s.line || {};
+  const lineTxt = ln.known
+    ? 'line ' + ln.baud + ' ' + esc(ln.format) + (ln.invert ? ' inverted' : '') + (ln.auto ? ' (auto-detected)' : ' (set by hand)') +
+      (ln.gap_ms ? ', a record ends after ' + (ln.gap_ms >= 1000 ? (ln.gap_ms / 1000) + ' s' : ln.gap_ms + ' ms') + ' of silence' : '')
+    : '<span class="warn">learning the line settings: print a slip on the meter</span>' +
+      (ln.edges ? ' (' + ln.edges + ' edges seen)' : '');
+  $('devline1').innerHTML = wifi + ' \u00b7 ' + s.records + ' records in flash \u00b7 ' + lineTxt;
+
+  let push;
+  if (s.unpushed > 0) {
+    push = '<b>' + s.unpushed + (s.unpushed === 1 ? ' new record' : ' new records') + ' not on GitHub yet</b>';
+    if (s.next_push_s != null) push += ' \u00b7 automatic push ' + (s.next_push_s > 0 ? 'in ' + dur(s.next_push_s) : 'now');
+  } else {
+    push = 'GitHub has every record';
+  }
+  const lp = s.last_push || {};
+  if (lp.at && !lp.ok) push += ' \u00b7 <span class="warn">last push failed: ' + esc(lp.result) + '</span>';
+  else if (s.last_ok_at) push += ' \u00b7 last push ' + fmtTime(new Date(s.last_ok_at));
+  if (s.site) push += ' \u00b7 <a href="' + esc(s.site) + '" target="_blank" rel="noopener">public site</a>';
+  $('devline2').innerHTML = push;
+
+  if (!pushing) {
+    btn.disabled = !(s.unpushed > 0 && s.wifi);
+    btn.textContent = s.unpushed > 0 ? 'Push to GitHub now' : 'Nothing new to push';
+  }
+}
+
+async function pushNow() {
+  const btn = $('pushbtn');
+  pushing = true;
+  btn.disabled = true;
+  btn.textContent = 'Pushing\u2026';
+  try {
+    const r = await fetch('./api/push', { method: 'POST' });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) { toast(j.message || 'Push refused (HTTP ' + r.status + ')'); pushing = false; devStatus(); return; }
+  } catch { toast('The logger is not answering.'); pushing = false; devStatus(); return; }
+
+  // The logger answers status requests once the push has finished.
+  const t0 = Date.now();
+  for (;;) {
+    await sleep(2000);
+    const s = await devStatus();
+    if (s && !s.push_requested && s.last_push && s.last_push.at) {
+      toast(s.last_push.ok ? 'Pushed to GitHub. The public site shows it in about a minute.'
+                           : 'Push failed: ' + s.last_push.result);
+      break;
+    }
+    if (Date.now() - t0 > 120000) { toast('The push is taking unusually long.'); break; }
+  }
+  pushing = false;
+  devStatus();
+}
+
 // --- controls --------------------------------------------------------------
 $('every').innerHTML = INTERVALS.map(([s, l]) => '<option value="' + s + '">' + l + '</option>').join('');
 $('every').value = refreshSec;
@@ -602,7 +800,17 @@ $('live').onclick = () => {
   pref.set('live', live ? '1' : '0');
   if (live) load(); else { clearTimeout(timer); paintPill(); }
 };
-$('now').onclick = load;
+$('now').onclick = () => { load(); if (DEVICE) devStatus(); };
+$('pushbtn').onclick = pushNow;
+$('redetect').onclick = async () => {
+  if (!confirm('Forget the line settings and learn them again from the next slip printed on the meter?')) return;
+  try {
+    const r = await fetch('./api/redetect', { method: 'POST' });
+    const j = await r.json().catch(() => ({}));
+    toast(j.message || (r.ok ? 'Re-detecting.' : 'Refused (HTTP ' + r.status + ')'));
+  } catch { toast('The logger is not answering.'); }
+  devStatus();
+};
 $('theme').onclick = () => {
   const dark = matchMedia('(prefers-color-scheme: dark)').matches;
   const cur = document.documentElement.dataset.theme || (dark ? 'dark' : 'light');
@@ -610,21 +818,24 @@ $('theme').onclick = () => {
 };
 $('csv').onclick = () => {
   if (!DB) return;
-  const cols = ['seq', 'device_ts', 'meter_date', 'meter_time', 'commodity', 'code',
-                'moisture_pct', 'temperature_c', 'humidity_pct', 'bytes', 'crc32', 'raw_b64'];
+  const keys = ['seq', 'device_ts', 'bytes', 'text', 'meter_date', 'meter_time', 'commodity', 'code',
+                'moisture_pct', 'temperature_c', 'humidity_pct', 'crc32', 'raw_b64'];
   const q = v => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
-  const csv = [cols.join(',')].concat(visible().map(r => cols.map(c => q(r[c])).join(','))).join('\n');
+  const csv = [keys.join(',')].concat(visible().map(r =>
+    keys.map(k => q(k === 'text' ? decodeRaw(r.raw_b64) : r[k])).join(','))).join('\n');
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
-  a.download = (DB.device || 'moisture') + '.csv';
+  a.download = (DB.device || 'meter-data') + '.csv';
   a.click();
 };
 
 // pause while the tab is hidden, catch up the moment it is shown again
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) clearTimeout(timer);
-  else if (live) load();
+  else if (live) { load(); if (DEVICE) devStatus(); }
 });
+// device status every 10 s while visible (the page is on the local network)
+setInterval(() => { if (DEVICE && !document.hidden && !pushing) devStatus(); }, 10000);
 let resizeTimer = null;
 addEventListener('resize', () => {
   clearTimeout(resizeTimer);
@@ -632,6 +843,7 @@ addEventListener('resize', () => {
 });
 setInterval(paintPill, 1000);
 
+devStatus();   // a 404 on GitHub Pages: the page stays a plain viewer
 load();
 </script>
 </body>
