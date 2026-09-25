@@ -192,8 +192,9 @@ function tsOf(r) {
   if (r.device_ts) { const d = new Date(r.device_ts); if (!isNaN(d)) return d; }
   return null;
 }
+const TZ = 'Asia/Kolkata';   // show depot time (IST) whatever the viewer's timezone
 function fmtTime(d) {
-  return d ? d.toLocaleString(undefined, { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : '--';
+  return d ? d.toLocaleString(undefined, { timeZone: TZ, day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : '--';
 }
 function num(v, dp = 1) { return (v == null || isNaN(v)) ? '--' : Number(v).toFixed(dp); }
 
@@ -341,8 +342,8 @@ function drawChart(rows) {
     const v = x0 + (x1 - x0) * i / (xTicks - 1 || 1), x = X(v);
     const d = new Date(v);
     const lbl = (x1 - x0) > 1728e5
-      ? d.toLocaleDateString(undefined, { day: '2-digit', month: 'short' })
-      : d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+      ? d.toLocaleDateString(undefined, { timeZone: TZ, day: '2-digit', month: 'short' })
+      : d.toLocaleTimeString(undefined, { timeZone: TZ, hour: '2-digit', minute: '2-digit' });
     g += '<text class="tick" x="' + x + '" y="' + (P.t + ih + 18) + '" text-anchor="' +
          (i === 0 ? 'start' : i === xTicks - 1 ? 'end' : 'middle') + '">' + lbl + '</text>';
   }
