@@ -1,10 +1,1 @@
-{
- "device": "depot-01",
- "generated": "2026-09-25T12:23:37+05:30",
- "schema": 1,
- "parser": 1,
- "total_readings": 0,
- "dropped_from_window": 0,
- "window": 1000,
- "records": []
-}
+{"device":"depot-01","generated":"2026-09-25T12:40:36+05:30","schema":1,"parser":1,"total_readings":2,"dropped_from_window":0,"window":1000,"records":[{"seq":1,"device":"depot-01","device_ts":"2026-09-25T12:40:08+05:30","uptime_ms":1126,"meter_date":null,"meter_time":null,"commodity":null,"code":null,"moisture_pct":null,"temperature_c":null,"humidity_pct":null,"bytes":1,"fields":0,"parser":1,"crc32":"d202ef8d","raw_b64":"AA=="},{"seq":2,"device":"depot-01","device_ts":"2026-09-25T12:40:29+05:30","uptime_ms":1199,"meter_date":null,"meter_time":null,"commodity":null,"code":null,"moisture_pct":null,"temperature_c":null,"humidity_pct":null,"bytes":1,"fields":0,"parser":1,"crc32":"d202ef8d","raw_b64":"AA=="}]}
