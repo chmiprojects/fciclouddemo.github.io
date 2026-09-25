@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Moisture Readings</title>
+<style>
+  :root {
+    color-scheme: light;
+    --page:        #f9f9f7;
+    --surface-1:   #fcfcfb;
+    --text-1:      #0b0b0b;
+    --text-2:      #52514e;
+    --muted:       #898781;
+    --grid:        #e1e0d9;
+    --axis:        #c3c2b7;
+    --border:      rgba(11,11,11,0.10);
+    --hover:       rgba(11,11,11,0.04);
+    --s1: #2a78d6;  --s2: #eb6834;  --s3: #1baf7a;  --s4: #898781;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --page:      #0d0d0d;
+      --surface-1: #1a1a19;
+      --text-1:    #ffffff;
+      --text-2:    #c3c2b7;
+      --muted:     #898781;
+      --grid:      #2c2c2a;
+      --axis:      #383835;
+      --border:    rgba(255,255,255,0.10);
+      --hover:     rgba(255,255,255,0.05);
+      --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #898781;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --page:      #0d0d0d;
+    --surface-1: #1a1a19;
+    --text-1:    #ffffff;
+    --text-2:    #c3c2b7;
+    --muted:     #898781;
+    --grid:      #2c2c2a;
+    --axis:      #383835;
+    --border:    rgba(255,255,255,0.10);
+    --hover:     rgba(255,255,255,0.05);
+    --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #898781;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--page);
+    color: var(--text-1);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  .wrap { max-width: 1060px; margin: 0 auto; padding: 28px 16px 64px; }
+
+  header { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 4px; }
+  h1 { font-size: 21px; margin: 0; letter-spacing: -0.01em; }
+  .sub { color: var(--text-2); font-size: 13px; }
+  .spacer { flex: 1 1 auto; }
+  button, select {
+    font: inherit; font-size: 13px; color: var(--text-1);
+    background: var(--surface-1); border: 1px solid var(--border);
+    border-radius: 7px; padding: 5px 10px; cursor: pointer;
+  }
+  button:hover, select:hover { background: var(--hover); }
+
+  .tiles { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); margin: 20px 0; }
+  .tile { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 13px 15px; }
+  .tile .k { font-size: 11px; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); }
+  .tile .v { font-size: 26px; margin-top: 3px; letter-spacing: -0.02em; }
+  .tile .u { font-size: 14px; color: var(--text-2); margin-left: 2px; }
+  .tile .n { font-size: 12px; color: var(--text-2); margin-top: 2px; }
+
+  .card { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin-bottom: 18px; }
+  .card h2 { font-size: 14px; margin: 0 0 2px; font-weight: 600; }
+  .card .cap { font-size: 12px; color: var(--text-2); margin-bottom: 12px; }
+
+  .filters { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; }
+  .filters label { font-size: 12px; color: var(--text-2); }
+
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 8px; }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-2); }
+  .swatch { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+
+  svg { display: block; width: 100%; height: auto; overflow: visible; }
+  .tick { font-size: 11px; fill: var(--muted); }
+  .gridline { stroke: var(--grid); stroke-width: 1; }
+  .axisline { stroke: var(--axis); stroke-width: 1; }
+  .dot { stroke: var(--surface-1); stroke-width: 2; cursor: pointer; }
+
+  #tip {
+    position: fixed; pointer-events: none; opacity: 0; transition: opacity .1s;
+    background: var(--surface-1); border: 1px solid var(--border); border-radius: 8px;
+    padding: 8px 10px; font-size: 12px; line-height: 1.45; color: var(--text-1);
+    box-shadow: 0 6px 20px rgba(0,0,0,.14); z-index: 20; max-width: 250px;
+  }
+  #tip b { font-weight: 600; }
+  #tip .m { color: var(--text-2); }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 7px 9px; border-bottom: 1px solid var(--border); }
+  th { font-size: 11px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  tr.rec:hover { background: var(--hover); }
+  tr.raw td { background: var(--page); padding: 0; border-bottom: 1px solid var(--border); }
+  tr.raw pre { margin: 0; padding: 10px 12px; font: 12px/1.45 ui-monospace, "Cascadia Code", Consolas, monospace; white-space: pre-wrap; word-break: break-word; color: var(--text-2); }
+  .chip { display: inline-flex; align-items: center; gap: 6px; }
+
+  .empty { text-align: center; padding: 48px 16px; color: var(--text-2); }
+  .empty code { background: var(--page); border: 1px solid var(--border); border-radius: 5px; padding: 1px 5px; font-size: 12px; }
+  .err { color: #d03b3b; }
+  .foot { font-size: 12px; color: var(--muted); margin-top: 26px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>Moisture readings</h1>
+    <span class="sub" id="meta"></span>
+    <span class="spacer"></span>
+    <button id="theme" title="Toggle light / dark">Theme</button>
+    <button id="csv">Download CSV</button>
+    <button id="reload">Reload</button>
+  </header>
+
+  <div id="app"><div class="empty">Loading&hellip;</div></div>
+
+  <p class="foot">
+    Raw slip bytes are stored verbatim with every record, so a parser change can be
+    replayed over the history without loss.
+  </p>
+</div>
+
+<div id="tip"></div>
+
+<script>
+// ---------------------------------------------------------------------------
+// Data source. Defaults to database.json beside this page; override with ?src=
+// ---------------------------------------------------------------------------
+const QS = new URLSearchParams(location.search);
+const DATA_URL = QS.get('src') || './database.json';
+if (QS.get('theme') === 'dark' || QS.get('theme') === 'light')
+  document.documentElement.dataset.theme = QS.get('theme');
+
+// The first three categorical slots are the all-pairs-validated set; anything
+// past the top three commodities folds into a muted "Other" rather than
+// generating a fourth hue.
+const SLOTS = ['var(--s1)', 'var(--s2)', 'var(--s3)'];
+const OTHER = 'var(--s4)';
+
+let DB = null, ROWS = [], COLORS = new Map(), filters = { commodity: 'all', range: 'all' };
+
+// --- load ------------------------------------------------------------------
+async function load() {
+  const app = document.getElementById('app');
+  app.innerHTML = '<div class="empty">Loading&hellip;</div>';
+  try {
+    const r = await fetch(DATA_URL + '?t=' + Date.now(), { cache: 'no-store' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    DB = await r.json();
+  } catch (e) {
+    app.innerHTML = '<div class="empty"><p class="err">Could not load <code>' + DATA_URL + '</code></p>'
+      + '<p>' + esc(e.message) + '</p><p>The logger creates this file on its first successful push.</p></div>';
+    return;
+  }
+  ROWS = (DB.records || []).slice().sort((a, b) => (a.seq || 0) - (b.seq || 0));
+  assignColors();
+  render();
+}
+
+function assignColors() {
+  const counts = new Map();
+  for (const r of ROWS) {
+    const c = commodityOf(r);
+    counts.set(c, (counts.get(c) || 0) + 1);
+  }
+  const ranked = [...counts.entries()].sort((a, b) => b[1] - a[1]).map(e => e[0]);
+  COLORS = new Map();
+  ranked.forEach((name, i) => COLORS.set(name, i < 3 ? SLOTS[i] : OTHER));
+}
+
+// --- helpers ---------------------------------------------------------------
+const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const commodityOf = r => (r.commodity && String(r.commodity).trim()) || 'Unlabelled';
+const colorOf = r => COLORS.get(commodityOf(r)) || OTHER;
+
+function tsOf(r) {
+  if (r.device_ts) { const d = new Date(r.device_ts); if (!isNaN(d)) return d; }
+  return null;
+}
+function fmtTime(d) {
+  return d ? d.toLocaleString(undefined, { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : '--';
+}
+function num(v, dp = 1) { return (v == null || isNaN(v)) ? '--' : Number(v).toFixed(dp); }
+
+function decodeRaw(b64) {
+  if (!b64) return '(no raw bytes)';
+  try {
+    const bin = atob(b64);
+    let out = '';
+    for (let i = 0; i < bin.length; i++) {
+      const c = bin.charCodeAt(i);
+      out += (c === 10 || c === 13) ? '\n' : (c >= 32 && c < 127 ? bin[i] : '·');
+    }
+    return out.replace(/\n{2,}/g, '\n');
+  } catch { return '(undecodable)'; }
+}
+
+function visible() {
+  const now = Date.now();
+  const spans = { '24h': 864e5, '7d': 6048e5, '30d': 2592e6 };
+  return ROWS.filter(r => {
+    if (filters.commodity !== 'all' && commodityOf(r) !== filters.commodity) return false;
+    if (filters.range !== 'all') {
+      const d = tsOf(r);
+      if (!d || now - d.getTime() > spans[filters.range]) return false;
+    }
+    return true;
+  });
+}
+
+// --- render ----------------------------------------------------------------
+function render() {
+  const rows = visible();
+  document.getElementById('meta').textContent =
+    (DB.device ? DB.device + ' · ' : '') +
+    (DB.total_readings != null ? DB.total_readings + ' readings taken · ' : '') +
+    'updated ' + (DB.generated ? fmtTime(new Date(DB.generated)) : 'unknown');
+
+  if (!ROWS.length) {
+    document.getElementById('app').innerHTML =
+      '<div class="empty"><p>No readings yet.</p><p>The device pushes after 20 records or 5 minutes, whichever comes first.</p></div>';
+    return;
+  }
+
+  document.getElementById('app').innerHTML =
+    tilesHtml(rows) +
+    '<div class="card">' + filtersHtml() +
+      '<h2>Moisture by reading time</h2>' +
+      '<div class="cap">One dot per printed slip. Colour is the commodity; the top three by volume take the named colours and the rest fold into Other.</div>' +
+      legendHtml(rows) + '<div id="chart"></div>' +
+    '</div>' +
+    tableHtml(rows);
+
+  wireFilters();
+  drawChart(rows);
+}
+
+function tilesHtml(rows) {
+  const m = rows.map(r => r.moisture_pct).filter(v => v != null && !isNaN(v));
+  const last = rows[rows.length - 1];
+  const mean = m.length ? m.reduce((a, b) => a + b, 0) / m.length : null;
+  const commodities = new Set(rows.map(commodityOf)).size;
+  const t = (k, v, u, n) =>
+    '<div class="tile"><div class="k">' + k + '</div><div class="v">' + v +
+    (u ? '<span class="u">' + u + '</span>' : '') + '</div>' +
+    (n ? '<div class="n">' + n + '</div>' : '') + '</div>';
+  return '<div class="tiles">' +
+    t('Readings shown', rows.length, '', ROWS.length !== rows.length ? 'of ' + ROWS.length + ' in window' : 'whole window') +
+    t('Latest moisture', last ? num(last.moisture_pct) : '--', '%', last ? commodityOf(last) + ' · ' + fmtTime(tsOf(last)) : '') +
+    t('Mean moisture', mean == null ? '--' : num(mean, 2), '%', m.length + ' with a value') +
+    t('Commodities', commodities, '', DB.dropped_from_window ? DB.dropped_from_window + ' older records aged out' : 'in this view') +
+    '</div>';
+}
+
+function filtersHtml() {
+  const names = [...new Set(ROWS.map(commodityOf))].sort();
+  return '<div class="filters">' +
+    '<label for="fc">Commodity</label><select id="fc"><option value="all">All</option>' +
+    names.map(n => '<option' + (filters.commodity === n ? ' selected' : '') + '>' + esc(n) + '</option>').join('') +
+    '</select>' +
+    '<label for="fr">Period</label><select id="fr">' +
+    [['all', 'All time'], ['24h', 'Last 24 hours'], ['7d', 'Last 7 days'], ['30d', 'Last 30 days']]
+      .map(([v, l]) => '<option value="' + v + '"' + (filters.range === v ? ' selected' : '') + '>' + l + '</option>').join('') +
+    '</select></div>';
+}
+
+function wireFilters() {
+  const fc = document.getElementById('fc'), fr = document.getElementById('fr');
+  if (fc) fc.onchange = e => { filters.commodity = e.target.value; render(); };
+  if (fr) fr.onchange = e => { filters.range = e.target.value; render(); };
+}
+
+function legendHtml(rows) {
+  // Ordered by the same volume rank that assigned the colours, so the legend
+  // reads in the same order as the palette slots.
+  const present = new Set(rows.map(commodityOf));
+  const names = [...COLORS.keys()].filter(n => present.has(n));
+  if (names.length < 2) return '';
+  return '<div class="legend">' + names.map(n =>
+    '<span><i class="swatch" style="background:' + (COLORS.get(n) || OTHER) + '"></i>' + esc(n) + '</span>').join('') + '</div>';
+}
+
+// --- chart -----------------------------------------------------------------
+function drawChart(rows) {
+  const host = document.getElementById('chart');
+  if (!host) return;
+  const pts = rows.filter(r => tsOf(r) && r.moisture_pct != null && !isNaN(r.moisture_pct));
+  const skipped = rows.length - pts.length;
+
+  if (pts.length < 2) {
+    host.innerHTML = '<div class="empty">Not enough timestamped readings to plot yet.' +
+      (skipped ? '<br>' + skipped + ' reading(s) have no device clock — see the table below.' : '') + '</div>';
+    return;
+  }
+
+  const W = Math.max(host.clientWidth || 640, 320), H = 280;
+  const P = { t: 14, r: 14, b: 30, l: 42 };
+  const iw = W - P.l - P.r, ih = H - P.t - P.b;
+
+  const xs = pts.map(r => tsOf(r).getTime());
+  const ys = pts.map(r => +r.moisture_pct);
+  let x0 = Math.min(...xs), x1 = Math.max(...xs);
+  if (x0 === x1) { x0 -= 36e5; x1 += 36e5; }
+
+  // Round the y domain out to a step that produces whole-number labels, so a
+  // gridline's label is its actual value rather than a rounded approximation.
+  const span = Math.max(Math.max(...ys) - Math.min(...ys), 1);
+  const step = [0.5, 1, 2, 2.5, 5, 10, 20, 50].find(s => span / s <= 6) || 100;
+  const yMin = Math.max(0, Math.floor((Math.min(...ys) - step / 2) / step) * step);
+  const yMax = Math.ceil((Math.max(...ys) + step / 2) / step) * step;
+  const dp = step < 1 ? 1 : 0;
+
+  const X = v => P.l + (v - x0) / (x1 - x0) * iw;
+  const Y = v => P.t + ih - (v - yMin) / (yMax - yMin || 1) * ih;
+
+  let g = '';
+  for (let v = yMin; v <= yMax + 1e-9; v += step) {
+    const y = Y(v);
+    g += '<line class="gridline" x1="' + P.l + '" x2="' + (W - P.r) + '" y1="' + y + '" y2="' + y + '"/>';
+    g += '<text class="tick" x="' + (P.l - 8) + '" y="' + (y + 4) + '" text-anchor="end">' + v.toFixed(dp) + '</text>';
+  }
+  g += '<line class="axisline" x1="' + P.l + '" x2="' + (W - P.r) + '" y1="' + (P.t + ih) + '" y2="' + (P.t + ih) + '"/>';
+
+  const xTicks = Math.min(5, pts.length);
+  for (let i = 0; i < xTicks; i++) {
+    const v = x0 + (x1 - x0) * i / (xTicks - 1 || 1), x = X(v);
+    const d = new Date(v);
+    const lbl = (x1 - x0) > 1728e5
+      ? d.toLocaleDateString(undefined, { day: '2-digit', month: 'short' })
+      : d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+    g += '<text class="tick" x="' + x + '" y="' + (P.t + ih + 18) + '" text-anchor="' +
+         (i === 0 ? 'start' : i === xTicks - 1 ? 'end' : 'middle') + '">' + lbl + '</text>';
+  }
+
+  g += '<text class="tick" x="' + P.l + '" y="' + (P.t - 2) + '" text-anchor="start">moisture %</text>';
+
+  pts.forEach((r, i) => {
+    g += '<circle class="dot" data-i="' + i + '" cx="' + X(xs[i]) + '" cy="' + Y(ys[i]) +
+         '" r="5" fill="' + colorOf(r) + '"/>';
+  });
+
+  host.innerHTML = '<svg viewBox="0 0 ' + W + ' ' + H + '" width="' + W + '" height="' + H +
+                   '" role="img" aria-label="Moisture percentage by reading time">' + g + '</svg>' +
+                   (skipped ? '<div class="cap" style="margin:8px 0 0">' + skipped +
+                              ' reading(s) omitted: no device timestamp. They are in the table.</div>' : '');
+
+  const tip = document.getElementById('tip');
+  host.querySelectorAll('.dot').forEach(el => {
+    el.addEventListener('mouseenter', ev => {
+      const r = pts[+el.dataset.i];
+      tip.innerHTML = '<b>' + num(r.moisture_pct) + '% moisture</b><br>' +
+        esc(commodityOf(r)) + (r.code ? ' <span class="m">(' + esc(r.code) + ')</span>' : '') + '<br>' +
+        '<span class="m">' + fmtTime(tsOf(r)) +
+        (r.temperature_c != null ? ' · ' + num(r.temperature_c) + '°C' : '') +
+        '<br>seq ' + r.seq + '</span>';
+      tip.style.opacity = 1;
+      el.setAttribute('r', 7);
+    });
+    el.addEventListener('mousemove', ev => {
+      tip.style.left = Math.min(ev.clientX + 14, innerWidth - tip.offsetWidth - 10) + 'px';
+      tip.style.top = Math.max(ev.clientY - tip.offsetHeight - 12, 8) + 'px';
+    });
+    el.addEventListener('mouseleave', () => { tip.style.opacity = 0; el.setAttribute('r', 5); });
+  });
+}
+
+// --- table -----------------------------------------------------------------
+function tableHtml(rows) {
+  const recent = rows.slice().reverse();
+  let body = '';
+  recent.forEach((r, i) => {
+    body += '<tr class="rec" data-i="' + i + '">' +
+      '<td class="num">' + r.seq + '</td>' +
+      '<td>' + fmtTime(tsOf(r)) + '</td>' +
+      '<td><span class="chip"><i class="swatch" style="background:' + colorOf(r) + '"></i>' + esc(commodityOf(r)) + '</span></td>' +
+      '<td>' + esc(r.code || '') + '</td>' +
+      '<td class="num">' + num(r.moisture_pct) + '</td>' +
+      '<td class="num">' + num(r.temperature_c) + '</td>' +
+      '<td class="num">' + (r.bytes || '') + '</td>' +
+      '<td>' + esc([r.meter_date, r.meter_time].filter(Boolean).join(' ') || '—') + '</td>' +
+      '</tr>' +
+      '<tr class="raw" id="raw' + i + '" hidden><td colspan="8"><pre>' + esc(decodeRaw(r.raw_b64)) + '</pre></td></tr>';
+  });
+  return '<div class="card"><h2>All records</h2>' +
+    '<div class="cap">Click a row to show the raw printed slip exactly as the meter sent it.</div>' +
+    '<div style="overflow-x:auto"><table><thead><tr>' +
+    '<th>Seq</th><th>Device time</th><th>Commodity</th><th>Code</th>' +
+    '<th style="text-align:right">Moisture %</th><th style="text-align:right">Temp &deg;C</th>' +
+    '<th style="text-align:right">Bytes</th><th>Meter clock</th>' +
+    '</tr></thead><tbody>' + body + '</tbody></table></div></div>';
+}
+
+document.addEventListener('click', e => {
+  const tr = e.target.closest('tr.rec');
+  if (!tr) return;
+  const raw = document.getElementById('raw' + tr.dataset.i);
+  if (raw) raw.hidden = !raw.hidden;
+});
+
+// --- chrome ----------------------------------------------------------------
+document.getElementById('reload').onclick = load;
+document.getElementById('theme').onclick = () => {
+  const dark = matchMedia('(prefers-color-scheme: dark)').matches;
+  const cur = document.documentElement.dataset.theme || (dark ? 'dark' : 'light');
+  document.documentElement.dataset.theme = cur === 'dark' ? 'light' : 'dark';
+  if (DB) render();
+};
+document.getElementById('csv').onclick = () => {
+  const cols = ['seq', 'device_ts', 'meter_date', 'meter_time', 'commodity', 'code',
+                'moisture_pct', 'temperature_c', 'humidity_pct', 'bytes', 'crc32', 'raw_b64'];
+  const q = v => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
+  const csv = [cols.join(',')].concat(visible().map(r => cols.map(c => q(r[c])).join(','))).join('\n');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+  a.download = (DB && DB.device ? DB.device : 'moisture') + '.csv';
+  a.click();
+};
+
+addEventListener('resize', () => { if (DB && ROWS.length) drawChart(visible()); });
+load();
+</script>
+</body>
+</html>
